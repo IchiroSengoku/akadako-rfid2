@@ -2,94 +2,577 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <title>AkaDako 接続テスト</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AkaDako + M5Stack RFID2 UID読み込み</title>
   <script src="https://699.jp/src/js/akadako.js"></script>
   <style>
     body {
-      font-family: sans-serif;
-      padding: 32px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 760px;
+      margin: 40px auto;
+      padding: 24px;
       line-height: 1.7;
+      background: #f7f7f7;
+    }
+
+    main {
+      background: white;
+      padding: 28px;
+      border-radius: 16px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+    }
+
+    h1 {
+      margin-top: 0;
+      font-size: 1.6rem;
+    }
+
+    .buttons {
+      display: flex;
+      gap: 16px;
+      margin: 24px 0;
+      flex-wrap: wrap;
     }
 
     button {
-      font-size: 1.2rem;
-      padding: 12px 24px;
-      border-radius: 10px;
+      font-size: 1.1rem;
+      padding: 14px 24px;
       border: none;
-      background: #e8eefc;
+      border-radius: 12px;
       cursor: pointer;
+      font-weight: 700;
+    }
+
+    #connectButton {
+      background: #e8eefc;
+    }
+
+    #readButton {
+      background: #dff7df;
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .card {
+      margin: 20px 0;
+      padding: 18px;
+      border-radius: 14px;
+      background: #fafafa;
+      border: 1px solid #e8e8e8;
+    }
+
+    .label {
+      color: #555;
+      font-size: 0.95rem;
+      margin-bottom: 6px;
+    }
+
+    #uidDisplay {
+      font-size: 1.8rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      word-break: break-all;
+      min-height: 2.2rem;
+    }
+
+    #historyList {
+      margin: 8px 0 0;
+      padding-left: 1.5rem;
+    }
+
+    #historyList li {
+      padding: 8px 0;
+      border-bottom: 1px solid #e8e8e8;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      word-break: break-all;
+    }
+
+    #historyList li:last-child {
+      border-bottom: none;
+    }
+
+    .history-time {
+      display: inline-block;
+      margin-left: 8px;
+      color: #666;
+      font-size: 0.85rem;
+      font-weight: 500;
+      letter-spacing: normal;
     }
 
     #status {
-      margin-top: 24px;
-      padding: 16px;
+      padding: 12px 16px;
       background: #f0f0f0;
       border-radius: 10px;
-      white-space: pre-wrap;
+      min-height: 1.5em;
+    }
+
+    code {
+      background: #f0f0f0;
+      padding: 2px 6px;
+      border-radius: 6px;
     }
   </style>
 </head>
 <body>
-  <h1>AkaDako 接続テスト</h1>
+  <main>
+    <h1>AkaDako + M5Stack RFID2 タグID読み込み</h1>
 
-  <button id="connectButton">AkaDakoに接続</button>
+    <p>
+      AkaDakoのI2CコネクタにM5Stack RFID2を接続します。<br />
+      「AkaDakoに接続」を押したあと、RFIDタグを近づけて「読み込み」を押すと、タグのUIDを表示します。
+    </p>
 
-  <div id="status">まだボタンは押されていません。</div>
+    <div class="buttons">
+      <button id="connectButton">AkaDakoに接続</button>
+      <button id="readButton" disabled>読み込み</button>
+    </div>
+
+    <div class="card">
+      <div class="label">読み取ったタグID</div>
+      <div id="uidDisplay">---</div>
+    </div>
+
+    <div class="card">
+      <div class="label">直近に読み取ったタグID（最新5件）</div>
+      <ol id="historyList">
+        <li>まだ読み取り履歴はありません。</li>
+      </ol>
+    </div>
+
+    <p id="status">未接続です。</p>
+
+    <p>
+      うまく接続できない場合は、このHTMLを<code>file://</code>で直接開かず、
+      VSCodeのLive ServerやGitHub Pagesなどで開いてください。
+    </p>
+  </main>
 
   <script>
+    let board = null;
+    let isBusy = false;
+    let rfidReady = false;
+    const uidHistory = [];
+
+    const RFID2_ADDRESS = 0x28;
+
+    const REG = {
+      Command: 0x01,
+      ComIrq: 0x04,
+      DivIrq: 0x05,
+      Error: 0x06,
+      Status2: 0x08,
+      FIFOData: 0x09,
+      FIFOLevel: 0x0A,
+      Control: 0x0C,
+      BitFraming: 0x0D,
+      Coll: 0x0E,
+      Mode: 0x11,
+      TxControl: 0x14,
+      TxASK: 0x15,
+      CRCResultH: 0x21,
+      CRCResultL: 0x22,
+      TMode: 0x2A,
+      TPrescaler: 0x2B,
+      TReloadH: 0x2C,
+      TReloadL: 0x2D,
+      Version: 0x37
+    };
+
+    const CMD = {
+      Idle: 0x00,
+      CalcCRC: 0x03,
+      Transceive: 0x0C,
+      SoftReset: 0x0F
+    };
+
+    const PICC = {
+      WUPA: 0x52,
+      SEL_CL1: 0x93,
+      SEL_CL2: 0x95,
+      SEL_CL3: 0x97,
+      CT: 0x88,
+      HLTA: 0x50
+    };
+
+    const STATUS = {
+      OK: "OK",
+      TIMEOUT: "TIMEOUT",
+      ERROR: "ERROR",
+      COLLISION: "COLLISION",
+      NO_ROOM: "NO_ROOM"
+    };
+
     const connectButton = document.getElementById("connectButton");
+    const readButton = document.getElementById("readButton");
+    const uidDisplay = document.getElementById("uidDisplay");
+    const historyList = document.getElementById("historyList");
     const statusText = document.getElementById("status");
 
     function setStatus(message) {
       statusText.textContent = message;
-      console.log(message);
     }
 
-    connectButton.addEventListener("click", async () => {
-      setStatus("ボタンは押されました。\nAkaDakoライブラリを確認しています...");
+    function setButtonsConnected(connected) {
+      connectButton.disabled = connected;
+      readButton.disabled = !connected;
+    }
 
-      if (typeof AkaDako === "undefined") {
-        setStatus(
-          "エラー：AkaDakoライブラリが読み込めていません。\n\n" +
-          "確認してください：\n" +
-          "1. インターネットに接続しているか\n" +
-          "2. https://699.jp/src/js/akadako.js がブロックされていないか\n" +
-          "3. 学校ネットワークで 699.jp が許可されているか"
-        );
+    function sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function toHex(value) {
+      return value.toString(16).padStart(2, "0").toUpperCase();
+    }
+
+    function formatUid(uidBytes) {
+      return uidBytes.map(toHex).join(" ");
+    }
+
+    function getCurrentTimeText() {
+      const now = new Date();
+      return now.toLocaleTimeString("ja-JP", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    }
+
+    function renderHistory() {
+      if (uidHistory.length === 0) {
+        historyList.innerHTML = "<li>まだ読み取り履歴はありません。</li>";
         return;
       }
 
-      setStatus(
-        "AkaDakoライブラリは読み込めています。\n" +
-        "AkaDako.connect() を実行します..."
-      );
+      historyList.innerHTML = uidHistory
+        .map(item => `<li>${item.uid}<span class="history-time">${item.time}</span></li>`)
+        .join("");
+    }
+
+    function addUidToHistory(uidText) {
+      uidHistory.unshift({
+        uid: uidText,
+        time: getCurrentTimeText()
+      });
+
+      if (uidHistory.length > 5) {
+        uidHistory.pop();
+      }
+
+      renderHistory();
+    }
+
+    async function writeRegister(register, data) {
+      if (!Array.isArray(data)) {
+        data = [data];
+      }
+      await board.runI2cWrite(RFID2_ADDRESS, register, data);
+    }
+
+    async function readRegister(register) {
+      const data = await board.fetchI2cRead(RFID2_ADDRESS, register, 1);
+      if (!data || data.length < 1) {
+        throw new Error(`I2C読み取りに失敗しました: register 0x${toHex(register)}`);
+      }
+      return data[0];
+    }
+
+    async function readRegisters(register, length) {
+      const data = await board.fetchI2cRead(RFID2_ADDRESS, register, length);
+      if (!data || data.length < length) {
+        throw new Error(`I2C読み取りに失敗しました: register 0x${toHex(register)}`);
+      }
+      return data;
+    }
+
+    async function setRegisterBitMask(register, mask) {
+      const value = await readRegister(register);
+      await writeRegister(register, value | mask);
+    }
+
+    async function clearRegisterBitMask(register, mask) {
+      const value = await readRegister(register);
+      await writeRegister(register, value & (~mask & 0xFF));
+    }
+
+    async function calculateCRC(data) {
+      await writeRegister(REG.Command, CMD.Idle);
+      await writeRegister(REG.DivIrq, 0x04);
+      await setRegisterBitMask(REG.FIFOLevel, 0x80);
+      await writeRegister(REG.FIFOData, data);
+      await writeRegister(REG.Command, CMD.CalcCRC);
+
+      const deadline = Date.now() + 120;
+      while (Date.now() < deadline) {
+        const irq = await readRegister(REG.DivIrq);
+        if (irq & 0x04) {
+          await writeRegister(REG.Command, CMD.Idle);
+          const crcLow = await readRegister(REG.CRCResultL);
+          const crcHigh = await readRegister(REG.CRCResultH);
+          return [crcLow, crcHigh];
+        }
+        await sleep(5);
+      }
+
+      throw new Error("CRC計算がタイムアウトしました。");
+    }
+
+    async function communicateWithPICC(command, waitIrq, sendData, options = {}) {
+      const validBits = options.validBits ?? 0;
+      const rxAlign = options.rxAlign ?? 0;
+      const maxBackLength = options.maxBackLength ?? 18;
+      const wantsResponse = options.wantsResponse ?? true;
+
+      const bitFraming = (rxAlign << 4) + validBits;
+
+      await writeRegister(REG.Command, CMD.Idle);
+      await writeRegister(REG.ComIrq, 0x7F);
+      await setRegisterBitMask(REG.FIFOLevel, 0x80);
+      await writeRegister(REG.FIFOData, sendData);
+      await writeRegister(REG.BitFraming, bitFraming);
+      await writeRegister(REG.Command, command);
+
+      if (command === CMD.Transceive) {
+        await setRegisterBitMask(REG.BitFraming, 0x80);
+      }
+
+      const deadline = Date.now() + 120;
+      let irq = 0;
+
+      while (Date.now() < deadline) {
+        irq = await readRegister(REG.ComIrq);
+        if (irq & waitIrq) break;
+        if (irq & 0x01) {
+          return { status: STATUS.TIMEOUT, data: [], validBits: 0 };
+        }
+        await sleep(5);
+      }
+
+      if (!(irq & waitIrq)) {
+        return { status: STATUS.TIMEOUT, data: [], validBits: 0 };
+      }
+
+      const error = await readRegister(REG.Error);
+      if (error & 0x13) {
+        return { status: STATUS.ERROR, data: [], validBits: 0, error };
+      }
+
+      if (error & 0x08) {
+        return { status: STATUS.COLLISION, data: [], validBits: 0, error };
+      }
+
+      if (!wantsResponse) {
+        return { status: STATUS.OK, data: [], validBits: 0 };
+      }
+
+      const fifoLength = await readRegister(REG.FIFOLevel);
+      if (fifoLength > maxBackLength) {
+        return { status: STATUS.NO_ROOM, data: [], validBits: 0 };
+      }
+
+      const data = fifoLength > 0 ? await readRegisters(REG.FIFOData, fifoLength) : [];
+      const receivedValidBits = await readRegister(REG.Control) & 0x07;
+
+      return {
+        status: STATUS.OK,
+        data,
+        validBits: receivedValidBits
+      };
+    }
+
+    async function transceive(sendData, options = {}) {
+      return await communicateWithPICC(CMD.Transceive, 0x30, sendData, options);
+    }
+
+    async function initRFID2() {
+      await writeRegister(REG.Command, CMD.SoftReset);
+      await sleep(80);
+
+      for (let i = 0; i < 20; i++) {
+        const command = await readRegister(REG.Command);
+        if ((command & 0x10) === 0) break;
+        await sleep(10);
+      }
+
+      await writeRegister(REG.TMode, 0x80);
+      await writeRegister(REG.TPrescaler, 0xA9);
+      await writeRegister(REG.TReloadH, 0x03);
+      await writeRegister(REG.TReloadL, 0xE8);
+      await writeRegister(REG.TxASK, 0x40);
+      await writeRegister(REG.Mode, 0x3D);
+
+      const txControl = await readRegister(REG.TxControl);
+      if ((txControl & 0x03) !== 0x03) {
+        await writeRegister(REG.TxControl, txControl | 0x03);
+      }
+
+      const version = await readRegister(REG.Version);
+      return version;
+    }
+
+    async function wakeUpCard() {
+      await clearRegisterBitMask(REG.Coll, 0x80);
+
+      const response = await transceive([PICC.WUPA], {
+        validBits: 7,
+        maxBackLength: 2
+      });
+
+      if (response.status !== STATUS.OK) return false;
+      return response.data.length === 2 && response.validBits === 0;
+    }
+
+    async function selectCascadeLevel(selectCommand) {
+      await clearRegisterBitMask(REG.Coll, 0x80);
+      await writeRegister(REG.BitFraming, 0x00);
+
+      const anticollision = await transceive([selectCommand, 0x20], {
+        maxBackLength: 5
+      });
+
+      if (anticollision.status !== STATUS.OK || anticollision.data.length !== 5) {
+        throw new Error(`UIDの取得に失敗しました: ${anticollision.status}`);
+      }
+
+      const bytes = anticollision.data;
+      const bcc = bytes[0] ^ bytes[1] ^ bytes[2] ^ bytes[3];
+
+      if (bcc !== bytes[4]) {
+        throw new Error("UIDのチェックに失敗しました。タグを1枚だけ近づけてください。");
+      }
+
+      const selectData = [selectCommand, 0x70, ...bytes];
+      const crc = await calculateCRC(selectData);
+      const selected = await transceive([...selectData, ...crc], {
+        maxBackLength: 3
+      });
+
+      if (selected.status !== STATUS.OK || selected.data.length < 1) {
+        throw new Error(`カード選択に失敗しました: ${selected.status}`);
+      }
+
+      return {
+        uidPart: bytes.slice(0, 4),
+        sak: selected.data[0]
+      };
+    }
+
+    async function haltCard() {
+      try {
+        const data = [PICC.HLTA, 0x00];
+        const crc = await calculateCRC(data);
+
+        await transceive([...data, ...crc], {
+          wantsResponse: false
+        });
+
+        await clearRegisterBitMask(REG.Status2, 0x08);
+      } catch (error) {
+        console.warn(error);
+      }
+    }
+
+    async function readUid() {
+      const found = await wakeUpCard();
+
+      if (!found) {
+        throw new Error("タグが見つかりませんでした。RFID2にタグを近づけてから、もう一度押してください。");
+      }
+
+      const uid = [];
+      const cascadeCommands = [PICC.SEL_CL1, PICC.SEL_CL2, PICC.SEL_CL3];
+
+      for (const selectCommand of cascadeCommands) {
+        const result = await selectCascadeLevel(selectCommand);
+        const part = result.uidPart;
+
+        if (part[0] === PICC.CT) {
+          uid.push(part[1], part[2], part[3]);
+        } else {
+          uid.push(part[0], part[1], part[2], part[3]);
+        }
+
+        if ((result.sak & 0x04) === 0) {
+          await haltCard();
+          return uid;
+        }
+      }
+
+      await haltCard();
+      return uid;
+    }
+
+    async function connectAkaDako() {
+      if (isBusy) return;
+      isBusy = true;
 
       try {
-        const board = await AkaDako.connect();
+        setStatus("AkaDakoに接続しています...");
+        uidDisplay.textContent = "---";
+        uidHistory.length = 0;
+        renderHistory();
 
-        setStatus(
-          "AkaDakoに接続できました。\n" +
-          "接続状態: " + board.isConnected
-        );
+        board = await AkaDako.connect();
 
         board.onDisconnected(() => {
+          board = null;
+          rfidReady = false;
+          setButtonsConnected(false);
           setStatus("AkaDakoとの接続が切れました。");
         });
-      } catch (error) {
-        console.error(error);
+
+        setStatus("RFID2を初期化しています...");
+        const version = await initRFID2();
+
+        rfidReady = true;
+        setButtonsConnected(true);
 
         setStatus(
-          "AkaDako.connect() でエラーが出ました。\n\n" +
-          "エラー内容:\n" +
-          error.message + "\n\n" +
-          "確認してください：\n" +
-          "1. Chrome または Edge で開いているか\n" +
-          "2. file:// ではなく Live Server / GitHub Pages で開いているか\n" +
-          "3. AkaDakoがUSBで接続されているか\n" +
-          "4. ブラウザでMIDI接続が許可されているか"
+          `接続しました。RFID2 version register: 0x${toHex(version)}。タグを近づけて「読み込み」を押してください。`
         );
+      } catch (error) {
+        console.error(error);
+        setButtonsConnected(false);
+        setStatus(`接続または初期化に失敗しました。${error.message}`);
+      } finally {
+        isBusy = false;
       }
-    });
+    }
+
+    async function handleReadButton() {
+      if (!board || !board.isConnected || !rfidReady || isBusy) return;
+
+      isBusy = true;
+      readButton.disabled = true;
+
+      try {
+        uidDisplay.textContent = "読み込み中...";
+        setStatus("タグを読み込んでいます...");
+
+        const uid = await readUid();
+        const uidText = formatUid(uid);
+
+        uidDisplay.textContent = uidText;
+        addUidToHistory(uidText);
+
+        setStatus(`読み込み成功：${uidText}`);
+      } catch (error) {
+        console.error(error);
+        uidDisplay.textContent = "---";
+        setStatus(error.message);
+      } finally {
+        isBusy = false;
+        readButton.disabled = false;
+      }
+    }
+
+    connectButton.addEventListener("click", connectAkaDako);
+    readButton.addEventListener("click", handleReadButton);
   </script>
 </body>
 </html>
