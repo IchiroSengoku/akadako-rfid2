@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>AkaDako 接続テスト</title>
+  <script src="https://699.jp/src/js/akadako.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 32px;
+      line-height: 1.7;
+    }
+
+    button {
+      font-size: 1.2rem;
+      padding: 12px 24px;
+      border-radius: 10px;
+      border: none;
+      background: #e8eefc;
+      cursor: pointer;
+    }
+
+    #status {
+      margin-top: 24px;
+      padding: 16px;
+      background: #f0f0f0;
+      border-radius: 10px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>AkaDako 接続テスト</h1>
+
+  <button id="connectButton">AkaDakoに接続</button>
+
+  <div id="status">まだボタンは押されていません。</div>
+
+  <script>
+    const connectButton = document.getElementById("connectButton");
+    const statusText = document.getElementById("status");
+
+    function setStatus(message) {
+      statusText.textContent = message;
+      console.log(message);
+    }
+
+    connectButton.addEventListener("click", async () => {
+      setStatus("ボタンは押されました。\nAkaDakoライブラリを確認しています...");
+
+      if (typeof AkaDako === "undefined") {
+        setStatus(
+          "エラー：AkaDakoライブラリが読み込めていません。\n\n" +
+          "確認してください：\n" +
+          "1. インターネットに接続しているか\n" +
+          "2. https://699.jp/src/js/akadako.js がブロックされていないか\n" +
+          "3. 学校ネットワークで 699.jp が許可されているか"
+        );
+        return;
+      }
+
+      setStatus(
+        "AkaDakoライブラリは読み込めています。\n" +
+        "AkaDako.connect() を実行します..."
+      );
+
+      try {
+        const board = await AkaDako.connect();
+
+        setStatus(
+          "AkaDakoに接続できました。\n" +
+          "接続状態: " + board.isConnected
+        );
+
+        board.onDisconnected(() => {
+          setStatus("AkaDakoとの接続が切れました。");
+        });
+      } catch (error) {
+        console.error(error);
+
+        setStatus(
+          "AkaDako.connect() でエラーが出ました。\n\n" +
+          "エラー内容:\n" +
+          error.message + "\n\n" +
+          "確認してください：\n" +
+          "1. Chrome または Edge で開いているか\n" +
+          "2. file:// ではなく Live Server / GitHub Pages で開いているか\n" +
+          "3. AkaDakoがUSBで接続されているか\n" +
+          "4. ブラウザでMIDI接続が許可されているか"
+        );
+      }
+    });
+  </script>
+</body>
+</html>
